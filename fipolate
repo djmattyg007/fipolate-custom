@@ -29,7 +29,8 @@ def die(msg):
   sys.stderr.write(msg)
   sys.exit(1)
 
-
+class OneshotInterrupt(BaseException):
+    pass
 
 def get_parser():
   """
@@ -57,6 +58,10 @@ def get_parser():
   parser.add_argument(
     '-r', '--regex', metavar='<regex>', default=DEFAULT_REGEX,
     help='The regular expression for interpolation. It must contain two capturing groups. The first determines if getpass is used to prompt for the replacement. The second determines the prompt itself. (default: %(default)s)'
+  )
+  parser.add_argument(
+    '-o', '--oneshot', action='store_true',
+    help='Only write to the named pipe once. Stop listening after the first write.'
   )
   return parser
 
@@ -159,19 +164,24 @@ def main(args=None):
       except (IOError,OSError) as e:
         die("failed to write to %s [%s]" % (pargs.output, str(e)))
 
+      finally:
+        if pargs.oneshot == True:
+          notifier.stop()
+          raise OneshotInterrupt
+
 
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, pyinotify.ProcessEvent)
     # IN_OPEN event is not raised when opening FIFO
     wm.add_watch(pargs.output, pyinotify.IN_CLOSE_NOWRITE)
     try:
-      print("Press ctrl+c to exit.")
+      if pargs.oneshot == False:
+        print("Press ctrl+c to exit.")
       notifier.loop(callback=write)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt,OneshotInterrupt):
       pass
     except pyinotify.NotifierError as e:
       die(str(e))
-
 
 
 if __name__ == '__main__':

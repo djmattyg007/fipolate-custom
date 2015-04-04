@@ -1,3 +1,6 @@
+# 2015-04-04
+* added oneshot functionality to ensure pipe is only written to once
+
 # 2013-02-12
 * added inotify event watching via [pyinotify](http://pyinotify.sourceforge.net/) to track when other end of pipe is closes
 * removed unnecessary block and interval options
