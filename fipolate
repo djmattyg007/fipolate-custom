@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+# -*- encoding: UTF-8 -*-
+
+# TODO
+# Consider relying on inotify events to catch FIFO deletions or mode changes.
+# While this would avoid redundant checks each loop, a dropped event may lead
+# to the interpolated text being written to disk. I think the extra stat calls
+# are worth the added robustness.
+
+import argparse
+import errno
+import getpass
+import locale
+import os
+import pyinotify
+import re
+import stat
+import sys
+import time
+
+
+DEFAULT_REGEX = '<%(\*)?(.+?)%>'
+
+
+def die(msg):
+  """
+  Print messsage to STDERR and exit with 1.
+  """
+  sys.stderr.write(msg)
+  sys.exit(1)
+
+
+
+def get_parser():
+  """
+  Get the argument parser.
+  """
+  parser = argparse.ArgumentParser(
+    description='Interpolate an input file with user-defined variables.'
+  )
+  parser.add_argument(
+    'output', metavar='<fifo path>',
+    help='The output FIFO or file path.'
+  )
+  parser.add_argument(
+    'input', metavar='<input file path>',
+    help='The input file to interpolate.'
+  )
+  parser.add_argument(
+    '--to-file', dest='to_file', action='store_true',
+    help='Write to a regular file instead of a FIFO.'
+  )
+  parser.add_argument(
+    '-m', '--mode', metavar='<octal mode>', default='600',
+    help='The mode of the output fifo/file. It must be user-readable. (default: %(default)s)'
+  )
+  parser.add_argument(
+    '-r', '--regex', metavar='<regex>', default=DEFAULT_REGEX,
+    help='The regular expression for interpolation. It must contain two capturing groups. The first determines if getpass is used to prompt for the replacement. The second determines the prompt itself. (default: %(default)s)'
+  )
+  return parser
+
+
+
+def main(args=None):
+  parser = get_parser()
+  pargs = parser.parse_args(args)
+
+  try:
+    mode = int(pargs.mode, 8)
+  except ValueError:
+    die('invalid octal mode: %s' % pargs.mode)
+
+  with open(pargs.input) as f:
+    text = f.read()
+
+  replacements = dict()
+  for key, is_pass, prompt in re.findall('(' + pargs.regex + ')', text):
+    if key not in replacements:
+      if is_pass:
+        replacements[key] = getpass.getpass(prompt + ': ')
+      else:
+        replacements[key] = input(prompt + ': ')
+
+  for key, replacement in replacements.items():
+    text = text.replace(key, replacement)
+
+  try:
+    st = os.stat(pargs.output)
+  except FileNotFoundError:
+    st = None
+
+  if pargs.to_file:
+    # TODO
+    # Determine how to prompt via STDERR and then document this.
+    if pargs.output == '-':
+      print(text)
+    else:
+      if st:
+        if not stat.S_ISREG(st.st_mode):
+          os.unlink(pargs.output)
+        else:
+          try:
+            if st.st_mode & 0o777 != mode:
+              os.chmod(pargs.output, mode)
+          except FileNotFoundError:
+            pass
+      with open(pargs.output, 'w') as f:
+        f.write(text)
+      try:
+        os.chmod(pargs.output, mode)
+      except FileNotFoundError:
+        pass
+
+  else:
+    if st and not stat.S_ISFIFO(st.st_mode):
+      os.unlink(pargs.output)
+    try:
+      os.mkfifo(pargs.output)
+    except FileExistsError:
+      pass
+
+    locale.setlocale(locale.LC_ALL, '')
+    lang, encoding = locale.getdefaultlocale()
+    text = text.encode(encoding)
+    def write(notifier=None):
+      try:
+        st = os.stat(pargs.output)
+        if not stat.S_ISFIFO(st.st_mode):
+          die('%s is no longer a FIFO' % pargs.output)
+
+        try:
+          if st.st_mode & 0o777 != mode:
+            os.chmod(pargs.output, mode)
+        except FileNotFoundError:
+          pass
+
+        fd = None
+        try:
+          fd = os.open(pargs.output, os.O_WRONLY, mode=mode)
+          os.write(fd, text)
+          print("[%s] written" % time.strftime('%Y-%m-%d %H:%M:%S'))
+        finally:
+          try:
+            if fd is not None:
+              os.close(fd)
+          except OSError as e:
+            if e.errno == errno.EBADF:
+              pass
+            else:
+              die(str(e))
+
+      except BrokenPipeError as e:
+        pass
+
+      except FileNotFoundError as e:
+        die('%s no longer exists' % pargs.output)
+
+      except (IOError,OSError) as e:
+        die("failed to write to %s [%s]" % (pargs.output, str(e)))
+
+
+    wm = pyinotify.WatchManager()
+    notifier = pyinotify.Notifier(wm, pyinotify.ProcessEvent)
+    # IN_OPEN event is not raised when opening FIFO
+    wm.add_watch(pargs.output, pyinotify.IN_CLOSE_NOWRITE)
+    try:
+      print("Press ctrl+c to exit.")
+      notifier.loop(callback=write)
+    except KeyboardInterrupt:
+      pass
+    except pyinotify.NotifierError as e:
+      die(str(e))
+
+
+
+if __name__ == '__main__':
+  main()

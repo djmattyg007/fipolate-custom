@@ -1,0 +1,5 @@
+# 2013-02-12
+* added inotify event watching via [pyinotify](http://pyinotify.sourceforge.net/) to track when other end of pipe is closes
+* removed unnecessary block and interval options
+* fixed bug in mode option
+* added FIFO checks to avoid problems in unexpected events such FIFO deletion while running
