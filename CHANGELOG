@@ -1,3 +1,6 @@
+# 2017-01-07
+* update shebang
+
 # 2015-04-04
 * added oneshot functionality to ensure pipe is only written to once
 
